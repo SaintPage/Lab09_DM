@@ -476,3 +476,459 @@ En ambos modelos, la mayor confusión ocurrió con la categoría Media, ya que v
 Los errores más graves serían clasificar una casa Barata como Cara o una Cara como Barata, porque son categorías muy diferentes. Ambos modelos cometieron 3 errores extremos, por lo que en ese aspecto tuvieron un comportamiento similar.
 
 
+# 7. Analice si no hay sobreajuste en los modelos. 
+```{r}
+train_x <- train_nn %>%
+  select(all_of(variables_entrada))
+
+train_y <- train_proc$respuesta
+```
+
+
+```{r}
+# Predicción en entrenamiento - Modelo 1
+pred_train_logistica <- predict(
+  modelo_nn_logistica,
+  newdata = train_x
+)
+
+pred_train_logistica <- as.data.frame(pred_train_logistica)
+colnames(pred_train_logistica) <- clases
+
+clase_train_logistica <- apply(
+  pred_train_logistica,
+  1,
+  function(x) clases[which.max(x)]
+)
+
+clase_train_logistica <- factor(
+  clase_train_logistica,
+  levels = clases
+)
+
+cfm_train_logistica <- confusionMatrix(
+  clase_train_logistica,
+  train_y
+)
+
+cfm_train_logistica
+```
+
+```{r}
+# Predicción en entrenamiento - Modelo 2
+pred_train_tanh <- predict(
+  modelo_nn_tanh,
+  newdata = train_x
+)
+
+pred_train_tanh <- as.data.frame(pred_train_tanh)
+colnames(pred_train_tanh) <- clases
+
+clase_train_tanh <- apply(
+  pred_train_tanh,
+  1,
+  function(x) clases[which.max(x)]
+)
+
+clase_train_tanh <- factor(
+  clase_train_tanh,
+  levels = clases
+)
+
+cfm_train_tanh <- confusionMatrix(
+  clase_train_tanh,
+  train_y
+)
+
+cfm_train_tanh
+```
+
+```{r}
+# Comparación entrenamiento vs prueba
+
+sobreajuste <- tibble(
+  Modelo = c(
+    "Modelo 1: logística",
+    "Modelo 2: tanh"
+  ),
+  Accuracy_entrenamiento = c(
+    as.numeric(cfm_train_logistica$overall["Accuracy"]),
+    as.numeric(cfm_train_tanh$overall["Accuracy"])
+  ),
+  Accuracy_prueba = c(
+    as.numeric(cfm_logistica$overall["Accuracy"]),
+    as.numeric(cfm_tanh$overall["Accuracy"])
+  ),
+  Diferencia = Accuracy_entrenamiento - Accuracy_prueba,
+  Kappa_entrenamiento = c(
+    as.numeric(cfm_train_logistica$overall["Kappa"]),
+    as.numeric(cfm_train_tanh$overall["Kappa"])
+  ),
+  Kappa_prueba = c(
+    as.numeric(cfm_logistica$overall["Kappa"]),
+    as.numeric(cfm_tanh$overall["Kappa"])
+  )
+)
+
+sobreajuste
+```
+
+Modelo 1, el accuracy de entrenamiento fue 0.9436 y el accuracy de prueba fue 0.7079, con una diferencia de 0.2357. Esto indica que el modelo aprende muy bien los datos de entrenamiento, pero pierde rendimiento al aplicarse sobre datos nuevos, por lo que presenta indicios de sobreajuste.
+
+En el Modelo 2, el sobreajuste es aún más evidente, ya que obtuvo un accuracy de entrenamiento de 0.9774 y un accuracy de prueba de 0.6733, con una diferencia de 0.3042. Además, su Kappa baja de 0.9644 en entrenamiento a 0.4869 en prueba, lo que muestra una pérdida importante de capacidad de generalización.
+
+Entonces, ambos modelos presentan sobreajuste, pero el problema es mayor en el Modelo 2. Aunque este modelo tuvo mejor desempeño en entrenamiento, fue peor en prueba, lo que sugiere que aprendió demasiado los patrones específicos del conjunto de entrenamiento y no generalizó tan bien como el Modelo 1. Por eso, el Modelo 1 es preferible, ya que aunque también tiene sobreajuste, su rendimiento en prueba fue mejor.
+
+
+# 8. Para el modelo elegido de clasificación tunee los parámetros y discuta si puede mejorar todavía el modelo sin llegar a sobre ajustarlo.
+```{r}
+
+library(tidyverse)
+library(caret)
+library(neuralnet)
+```
+
+```{r}
+
+set.seed(123)
+
+idx_tuning <- createDataPartition(
+  train_proc$respuesta,
+  p = 0.80,
+  list = FALSE
+)
+
+train_tuning_proc <- train_proc[idx_tuning, ]
+valid_tuning_proc <- train_proc[-idx_tuning, ]
+
+dim(train_tuning_proc)
+dim(valid_tuning_proc)
+```
+```{r}
+# Preparar datos para neuralnet en la partición de tuning
+
+clases <- levels(train_proc$respuesta)
+
+y_train_tuning <- model.matrix(~ respuesta - 1, data = train_tuning_proc)
+colnames(y_train_tuning) <- paste0("clase_", make.names(clases))
+
+train_tuning_nn <- bind_cols(
+  as_tibble(y_train_tuning),
+  train_tuning_proc %>% select(-respuesta)
+)
+
+valid_x <- valid_tuning_proc %>% select(-respuesta)
+valid_y <- valid_tuning_proc$respuesta
+
+variables_salida_tuning <- colnames(y_train_tuning)
+variables_entrada_tuning <- setdiff(names(train_tuning_nn), variables_salida_tuning)
+
+formula_tuning <- as.formula(
+  paste(
+    paste(variables_salida_tuning, collapse = " + "),
+    "~",
+    paste(variables_entrada_tuning, collapse = " + ")
+  )
+)
+```
+
+```{r}
+# Preparar datos para neuralnet en la partición de tuning
+
+clases <- levels(train_proc$respuesta)
+
+y_train_tuning <- model.matrix(~ respuesta - 1, data = train_tuning_proc)
+colnames(y_train_tuning) <- paste0("clase_", make.names(clases))
+
+train_tuning_nn <- bind_cols(
+  as_tibble(y_train_tuning),
+  train_tuning_proc %>% select(-respuesta)
+)
+
+valid_x <- valid_tuning_proc %>% select(-respuesta)
+valid_y <- valid_tuning_proc$respuesta
+
+variables_salida_tuning <- colnames(y_train_tuning)
+variables_entrada_tuning <- setdiff(names(train_tuning_nn), variables_salida_tuning)
+
+formula_tuning <- as.formula(
+  paste(
+    paste(variables_salida_tuning, collapse = " + "),
+    "~",
+    paste(variables_entrada_tuning, collapse = " + ")
+  )
+)
+```
+
+```{r}
+# Preparar datos para neuralnet en la partición de tuning
+
+clases <- levels(train_proc$respuesta)
+
+y_train_tuning <- model.matrix(~ respuesta - 1, data = train_tuning_proc)
+colnames(y_train_tuning) <- paste0("clase_", make.names(clases))
+
+train_tuning_nn <- bind_cols(
+  as_tibble(y_train_tuning),
+  train_tuning_proc %>% select(-respuesta)
+)
+
+valid_x <- valid_tuning_proc %>% select(-respuesta)
+valid_y <- valid_tuning_proc$respuesta
+
+variables_salida_tuning <- colnames(y_train_tuning)
+variables_entrada_tuning <- setdiff(names(train_tuning_nn), variables_salida_tuning)
+
+formula_tuning <- as.formula(
+  paste(
+    paste(variables_salida_tuning, collapse = " + "),
+    "~",
+    paste(variables_entrada_tuning, collapse = " + ")
+  )
+)
+```
+
+```{r}
+# Función para entrenar y evaluar cada combinación de parámetros
+
+evaluar_nn <- function(hidden_config, activacion, threshold_val) {
+  
+  tiempo <- system.time({
+    modelo <- tryCatch(
+      neuralnet(
+        formula = formula_tuning,
+        data = train_tuning_nn,
+        hidden = hidden_config,
+        act.fct = activacion,
+        linear.output = FALSE,
+        threshold = threshold_val,
+        stepmax = 1e6,
+        lifesign = "none"
+      ),
+      error = function(e) NULL
+    )
+  })
+  
+  if (is.null(modelo)) {
+    return(tibble(
+      hidden = paste(hidden_config, collapse = "-"),
+      activacion = activacion,
+      threshold = threshold_val,
+      accuracy_train = NA_real_,
+      accuracy_validacion = NA_real_,
+      diferencia = NA_real_,
+      tiempo_segundos = as.numeric(tiempo["elapsed"])
+    ))
+  }
+  
+  train_x_tuning <- train_tuning_nn %>%
+    select(all_of(variables_entrada_tuning))
+  
+  pred_train <- as.data.frame(predict(modelo, newdata = train_x_tuning))
+  colnames(pred_train) <- clases
+  
+  clase_train <- apply(
+    pred_train,
+    1,
+    function(x) clases[which.max(x)]
+  )
+  
+  clase_train <- factor(clase_train, levels = clases)
+  
+  cfm_train <- confusionMatrix(
+    clase_train,
+    train_tuning_proc$respuesta
+  )
+  
+  pred_valid <- as.data.frame(predict(modelo, newdata = valid_x))
+  colnames(pred_valid) <- clases
+  
+  clase_valid <- apply(
+    pred_valid,
+    1,
+    function(x) clases[which.max(x)]
+  )
+  
+  clase_valid <- factor(clase_valid, levels = clases)
+  
+  cfm_valid <- confusionMatrix(
+    clase_valid,
+    valid_y
+  )
+  
+  tibble(
+    hidden = paste(hidden_config, collapse = "-"),
+    activacion = activacion,
+    threshold = threshold_val,
+    accuracy_train = as.numeric(cfm_train$overall["Accuracy"]),
+    accuracy_validacion = as.numeric(cfm_valid$overall["Accuracy"]),
+    diferencia = accuracy_train - accuracy_validacion,
+    tiempo_segundos = as.numeric(tiempo["elapsed"])
+  )
+}
+```
+
+```{r}
+# Grilla de parámetros a probar
+
+grid_tuning <- tibble(
+  hidden_config = list(
+    c(3),
+    c(5),
+    c(7),
+    c(4, 2),
+    c(5, 3)
+  ),
+  activacion = c(
+    "logistic",
+    "logistic",
+    "logistic",
+    "logistic",
+    "logistic"
+  ),
+  threshold_val = c(
+    0.01,
+    0.01,
+    0.01,
+    0.01,
+    0.01
+  )
+)
+
+grid_tuning
+```
+
+
+```{r}
+set.seed(123)
+
+resultados_tuning <- pmap_dfr(
+  grid_tuning,
+  evaluar_nn
+)
+
+resultados_tuning %>%
+  arrange(desc(accuracy_validacion), diferencia)
+```
+
+
+```{r}
+mejor_tuneado <- resultados_tuning %>%
+  filter(!is.na(accuracy_validacion)) %>%
+  arrange(desc(accuracy_validacion), diferencia, tiempo_segundos) %>%
+  slice(1)
+
+mejor_tuneado
+```
+
+
+```{r}
+hidden_final <- as.numeric(str_split(mejor_tuneado$hidden, "-", simplify = TRUE))
+activacion_final <- mejor_tuneado$activacion
+threshold_final <- mejor_tuneado$threshold
+
+tiempo_tuneado_final <- system.time({
+  modelo_nn_tuneado <- neuralnet(
+    formula = formula_nn,
+    data = train_nn,
+    hidden = hidden_final,
+    act.fct = activacion_final,
+    linear.output = FALSE,
+    threshold = threshold_final,
+    stepmax = 1e6,
+    lifesign = "minimal"
+  )
+})
+
+tiempo_tuneado_final
+```
+
+
+```{r}
+pred_tuneado <- as.data.frame(
+  predict(modelo_nn_tuneado, newdata = test_x)
+)
+
+colnames(pred_tuneado) <- clases
+
+clase_pred_tuneado <- apply(
+  pred_tuneado,
+  1,
+  function(x) clases[which.max(x)]
+)
+
+clase_pred_tuneado <- factor(
+  clase_pred_tuneado,
+  levels = clases
+)
+
+cfm_tuneado <- confusionMatrix(
+  clase_pred_tuneado,
+  test_y
+)
+
+cfm_tuneado
+```
+```{r}
+# Evaluación del modelo tuneado en entrenamiento para revisar sobreajuste
+
+pred_train_tuneado <- as.data.frame(
+  predict(modelo_nn_tuneado, newdata = train_x)
+)
+
+colnames(pred_train_tuneado) <- clases
+
+clase_train_tuneado <- apply(
+  pred_train_tuneado,
+  1,
+  function(x) clases[which.max(x)]
+)
+
+clase_train_tuneado <- factor(
+  clase_train_tuneado,
+  levels = clases
+)
+
+cfm_train_tuneado <- confusionMatrix(
+  clase_train_tuneado,
+  train_y
+)
+
+cfm_train_tuneado
+```
+
+
+```{r}
+comparacion_tuning_final <- tibble(
+  Modelo = c(
+    "Modelo 1 original",
+    "Modelo 1 tuneado"
+  ),
+  Accuracy_entrenamiento = c(
+    as.numeric(cfm_train_logistica$overall["Accuracy"]),
+    as.numeric(cfm_train_tuneado$overall["Accuracy"])
+  ),
+  Accuracy_prueba = c(
+    as.numeric(cfm_logistica$overall["Accuracy"]),
+    as.numeric(cfm_tuneado$overall["Accuracy"])
+  ),
+  Diferencia = Accuracy_entrenamiento - Accuracy_prueba,
+  Kappa_entrenamiento = c(
+    as.numeric(cfm_train_logistica$overall["Kappa"]),
+    as.numeric(cfm_train_tuneado$overall["Kappa"])
+  ),
+  Kappa_prueba = c(
+    as.numeric(cfm_logistica$overall["Kappa"]),
+    as.numeric(cfm_tuneado$overall["Kappa"])
+  )
+)
+
+comparacion_tuning_final
+```
+
+Después de realizar el ajuste de parámetros, se comparó el Modelo 1 original con el Modelo 1 tuneado. El modelo original obtuvo un accuracy de entrenamiento de 0.9436 y un accuracy de prueba de 0.7079, mientras que el modelo tuneado obtuvo un accuracy de entrenamiento de 0.9323 y un accuracy de prueba de 0.6980.
+
+Aunque el modelo tuneado redujo ligeramente la diferencia entre entrenamiento y prueba, pasando de 0.2357 a 0.2343, no logró mejorar el desempeño en prueba. Además, el Kappa de prueba bajó de 0.5384 a 0.5200, lo que indica una pequeña pérdida en la capacidad de clasificación.
+
+Por lo tanto, el tuning ayudó a disminuir muy levemente el sobreajuste, pero no mejoró la efectividad del modelo sobre datos nuevos. En conclusión, conviene mantener el Modelo 1 original, ya que presenta mejor accuracy y mejor Kappa en el conjunto de prueba, aunque ambos modelos todavía muestran indicios de sobreajuste.
+
