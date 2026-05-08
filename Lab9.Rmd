@@ -193,4 +193,286 @@ test_model  <- test_model  %>% select(-all_of(vars_fuga))
 
 
 
+# 3. Genere dos modelos de redes neuronales que sean capaz de clasificar usando la variable respuesta que categoriza las casas en baratas, medias y caras. Estos modelos deben tener diferentes topologías y funciones de activación.
+```{r}
+if (!"respuesta" %in% names(train_model) && "categoria_precio" %in% names(train_model)) {
+  train_model <- train_model %>%
+    rename(respuesta = categoria_precio)
+
+  test_model <- test_model %>%
+    rename(respuesta = categoria_precio)
+}
+
+train_model$respuesta <- factor(train_model$respuesta,
+                                levels = c("Barata", "Media", "Cara"))
+
+test_model$respuesta <- factor(test_model$respuesta,
+                               levels = c("Barata", "Media", "Cara"))
+
+table(train_model$respuesta)
+table(test_model$respuesta)
+```
+
+```{r}
+# Convertir fechas a número, porque neuralnet solo trabaja con variables numéricas
+
+train_model <- train_model %>%
+  mutate(across(where(~ inherits(.x, "Date")), as.numeric))
+
+test_model <- test_model %>%
+  mutate(across(where(~ inherits(.x, "Date")), as.numeric))
+```
+
+```{r}
+receta_nn <- recipe(respuesta ~ ., data = train_model) %>%
+  step_unknown(all_nominal_predictors(), new_level = "Desconocido") %>%
+  step_other(all_nominal_predictors(), threshold = 0.01, other = "Otro") %>%
+  step_novel(all_nominal_predictors(), new_level = "Nuevo") %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_zv(all_predictors()) %>%
+  step_nzv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+prep_nn <- prep(receta_nn, training = train_model, retain = TRUE)
+
+train_proc <- bake(prep_nn, new_data = NULL)
+test_proc  <- bake(prep_nn, new_data = test_model)
+
+dim(train_proc)
+dim(test_proc)
+```
+
+```{r}
+names(train_proc) <- make.names(names(train_proc), unique = TRUE)
+names(test_proc)  <- names(train_proc)
+
+glimpse(train_proc)
+```
+
+```{r}
+clases <- levels(train_proc$respuesta)
+
+y_train <- model.matrix(~ respuesta - 1, data = train_proc)
+colnames(y_train) <- paste0("clase_", make.names(clases))
+
+train_nn <- bind_cols(
+  as_tibble(y_train),
+  train_proc %>% select(-respuesta)
+)
+
+test_x <- test_proc %>%
+  select(-respuesta)
+
+test_y <- test_proc$respuesta
+
+head(train_nn[, 1:3])
+```
+
+```{r}
+variables_salida <- colnames(y_train)
+variables_entrada <- setdiff(names(train_nn), variables_salida)
+
+formula_nn <- as.formula(
+  paste(
+    paste(variables_salida, collapse = " + "),
+    "~",
+    paste(variables_entrada, collapse = " + ")
+  )
+)
+
+formula_nn
+```
+# 4. Use los modelos para predecir el valor de la variable respuesta.
+
+## Modelo 1: red neuronal pequeña con activación logística
+```{r}
+set.seed(123)
+
+modelo_nn_logistica <- neuralnet(
+  formula = formula_nn,
+  data = train_nn,
+  hidden = c(5),
+  act.fct = "logistic",
+  linear.output = FALSE,
+  stepmax = 1e6,
+  lifesign = "minimal"
+)
+
+modelo_nn_logistica
+```
+
+```{r}
+pred_logistica <- predict(
+  modelo_nn_logistica,
+  newdata = test_x
+)
+
+pred_logistica <- as.data.frame(pred_logistica)
+colnames(pred_logistica) <- clases
+
+head(pred_logistica)
+```
+
+```{r}
+clase_pred_logistica <- apply(
+  pred_logistica,
+  1,
+  function(x) clases[which.max(x)]
+)
+
+clase_pred_logistica <- factor(
+  clase_pred_logistica,
+  levels = clases
+)
+
+test_resultados <- test_model %>%
+  mutate(pred_nn_logistica = clase_pred_logistica)
+
+head(test_resultados %>% select(respuesta, pred_nn_logistica))
+```
+
+```{r}
+# Matriz de confusión modelo 1
+library(tidyverse)
+library(caret)
+cfm_logistica <- confusionMatrix(
+  data = clase_pred_logistica,
+  reference = test_y
+)
+
+cfm_logistica
+```
+
+## Modelo 2: red neuronal más profunda con activación tangente hiperbólica
+```{r}
+set.seed(123)
+
+modelo_nn_tanh <- neuralnet(
+  formula = formula_nn,
+  data = train_nn,
+  hidden = c(8, 4),
+  act.fct = "tanh",
+  linear.output = FALSE,
+  stepmax = 1e6,
+  lifesign = "minimal"
+)
+
+modelo_nn_tanh
+```
+
+```{r}
+# Predicción modelo 2
+
+pred_tanh <- predict(
+  modelo_nn_tanh,
+  newdata = test_x
+)
+
+pred_tanh <- as.data.frame(pred_tanh)
+colnames(pred_tanh) <- clases
+
+head(pred_tanh)
+```
+
+```{r}
+
+clase_pred_tanh <- apply(
+  pred_tanh,
+  1,
+  function(x) clases[which.max(x)]
+)
+
+clase_pred_tanh <- factor(
+  clase_pred_tanh,
+  levels = clases
+)
+
+test_resultados <- test_resultados %>%
+  mutate(pred_nn_tanh = clase_pred_tanh)
+
+head(test_resultados %>% select(respuesta, pred_nn_logistica, pred_nn_tanh))
+```
+
+
+```{r}
+# Matriz de confusión modelo 2
+
+cfm_tanh <- confusionMatrix(
+  data = clase_pred_tanh,
+  reference = test_y
+)
+
+cfm_tanh
+```
+# 5. Haga las matrices de confusión respectivas.
+
+```{r}
+# Matriz de confusión modelo 1
+library(tidyverse)
+library(caret)
+cfm_logistica <- confusionMatrix(
+  data = clase_pred_logistica,
+  reference = test_y
+)
+
+cfm_logistica
+```
+
+```{r}
+# Matriz de confusión modelo 2
+
+cfm_tanh <- confusionMatrix(
+  data = clase_pred_tanh,
+  reference = test_y
+)
+
+cfm_tanh
+```
+
+# 6. Compare los resultados obtenidos con los diferentes modelos de clasificación usando redes neuronales en cuanto a efectividad, tiempo de procesamiento y equivocaciones (donde el algoritmo se equivocó más, donde se equivocó menos y la importancia que tienen los errores).
+
+```{r}
+# Tiempo del modelo 1: red logística
+tiempo_logistica <- system.time({
+  modelo_nn_logistica <- neuralnet(
+    formula = formula_nn,
+    data = train_nn,
+    hidden = c(5),
+    act.fct = "logistic",
+    linear.output = FALSE,
+    stepmax = 1e6,
+    lifesign = "minimal"
+  )
+})
+
+tiempo_logistica
+```
+
+
+```{r}
+# Tiempo del modelo 2: red tanh
+tiempo_tanh <- system.time({
+  modelo_nn_tanh <- neuralnet(
+    formula = formula_nn,
+    data = train_nn,
+    hidden = c(8, 4),
+    act.fct = "tanh",
+    linear.output = FALSE,
+    stepmax = 1e6,
+    lifesign = "minimal"
+  )
+})
+
+tiempo_tanh
+```
+
+Al comparar los dos modelos de redes neuronales, el Modelo 1 tuvo mejor desempeño general. Su accuracy fue de 0.7079, mientras que el Modelo 2 obtuvo 0.6733. Además, el Modelo 1 tuvo un Kappa de 0.5384, superior al 0.4869 del Modelo 2, lo que indica una mejor capacidad de clasificación.
+
+El Modelo 1 acertó 143 de 202 casos y cometió 59 errores, mientras que el Modelo 2 acertó 136 casos y cometió 66 errores. Por lo tanto, el Modelo 1 fue más efectivo.
+
+En ambos modelos, la mayor confusión ocurrió con la categoría Media, ya que varias casas medias fueron clasificadas como baratas o caras. Esto muestra que la clase intermedia es la más difícil de separar.
+
+Los errores más graves serían clasificar una casa Barata como Cara o una Cara como Barata, porque son categorías muy diferentes. Ambos modelos cometieron 3 errores extremos, por lo que en ese aspecto tuvieron un comportamiento similar.
+
 
