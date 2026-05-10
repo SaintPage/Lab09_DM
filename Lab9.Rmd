@@ -932,3 +932,96 @@ Aunque el modelo tuneado redujo ligeramente la diferencia entre entrenamiento y 
 
 Por lo tanto, el tuning ayudó a disminuir muy levemente el sobreajuste, pero no mejoró la efectividad del modelo sobre datos nuevos. En conclusión, conviene mantener el Modelo 1 original, ya que presenta mejor accuracy y mejor Kappa en el conjunto de prueba, aunque ambos modelos todavía muestran indicios de sobreajuste.
 
+# 9. Seleccione ahora el precio del listing como variable respuesta.
+
+A partir de aquí cambiamos la variable respuesta. Ya no clasificamos en
+Barata / Media / Cara, sino que queremos predecir el valor numérico de `price`.
+Para mantener la comparación válida con las entregas anteriores se usan los
+**mismos** `train_data` y `test_data` definidos al inicio (split con
+`set.seed(123)` y `prop = 0.80`).
+
+```{r}
+# Construimos los conjuntos para regresión a partir de los splits originales.
+# Quitamos las mismas columnas de identificadores/texto que ya habíamos
+# descartado, pero conservamos `price` (ahora es la variable respuesta) y
+# eliminamos `categoria_precio` para evitar fuga, además de
+# `estimated_revenue_l365d` que también se elimina por fuga directa con price.
+
+vars_quitar_reg <- intersect(
+  names(train_data),
+  c(
+    "id", "listing_url", "scrape_id", "source", "name", "description",
+    "neighborhood_overview", "picture_url", "host_id", "host_url",
+    "host_name", "host_location", "host_about",
+    "host_thumbnail_url", "host_picture_url",
+    "license", "amenities",
+    "categoria_precio",        # fuga: se construyó a partir de price
+    "estimated_revenue_l365d"  # fuga: se calcula con price
+  )
+)
+
+train_reg <- train_data %>% select(-all_of(vars_quitar_reg))
+test_reg  <- test_data  %>% select(-all_of(vars_quitar_reg))
+
+# Filas sin precio no aportan a regresión
+train_reg <- train_reg %>% filter(!is.na(price))
+test_reg  <- test_reg  %>% filter(!is.na(price))
+
+# Convertir fechas a numérico (igual que en la parte de clasificación)
+train_reg <- train_reg %>%
+  mutate(across(where(~ inherits(.x, "Date")), as.numeric))
+
+test_reg <- test_reg %>%
+  mutate(across(where(~ inherits(.x, "Date")), as.numeric))
+
+dim(train_reg)
+dim(test_reg)
+summary(train_reg$price)
+```
+
+```{r}
+# Receta para regresión: imputación, dummies, normalización de predictores.
+# IMPORTANTE: para neuralnet conviene además escalar la variable respuesta
+# (price) al rango [0, 1]; lo hacemos manualmente para poder desescalar
+# las predicciones al final y reportar métricas en la escala real.
+
+receta_reg <- recipe(price ~ ., data = train_reg) %>%
+  step_unknown(all_nominal_predictors(), new_level = "Desconocido") %>%
+  step_other(all_nominal_predictors(), threshold = 0.01, other = "Otro") %>%
+  step_novel(all_nominal_predictors(), new_level = "Nuevo") %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_zv(all_predictors()) %>%
+  step_nzv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+prep_reg <- prep(receta_reg, training = train_reg, retain = TRUE)
+
+train_reg_proc <- bake(prep_reg, new_data = NULL)
+test_reg_proc  <- bake(prep_reg, new_data = test_reg)
+
+# Limpieza de nombres por si neuralnet se queja con caracteres especiales
+names(train_reg_proc) <- make.names(names(train_reg_proc), unique = TRUE)
+names(test_reg_proc)  <- names(train_reg_proc)
+
+# Escalar la variable respuesta a [0, 1] usando min/max del entrenamiento
+price_min <- min(train_reg_proc$price, na.rm = TRUE)
+price_max <- max(train_reg_proc$price, na.rm = TRUE)
+
+train_reg_proc <- train_reg_proc %>%
+  mutate(price_scaled = (price - price_min) / (price_max - price_min))
+
+test_reg_proc <- test_reg_proc %>%
+  mutate(price_scaled = (price - price_min) / (price_max - price_min))
+
+# Variables de entrada (todo menos price y price_scaled)
+variables_entrada_reg <- setdiff(
+  names(train_reg_proc),
+  c("price", "price_scaled")
+)
+
+formula_reg <- as.formula(
+  paste("price_scaled ~", paste(variables_entrada_reg, collapse = " + "))
+)
+```
+
