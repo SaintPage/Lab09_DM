@@ -1116,3 +1116,419 @@ cat("Modelo 2 (tanh, c(8,4)):\n",
     "  MAE  =", round(mae_tanh, 2), "\n",
     "  R^2  =", round(r2_tanh, 4), "\n")
 ```
+
+
+# 11. Compare los dos modelos de regresión y determine cuál funcionó mejor para predecir el precio de las casas.
+
+```{r}
+comparacion_regresion <- tibble(
+  Modelo = c(
+    "Modelo 1: logística - c(5)",
+    "Modelo 2: tanh - c(8, 4)"
+  ),
+  RMSE  = c(rmse_log, rmse_tanh),
+  MAE   = c(mae_log,  mae_tanh),
+  R2    = c(r2_log,   r2_tanh),
+  Tiempo_segundos = c(
+    as.numeric(tiempo_reg_logistica["elapsed"]),
+    as.numeric(tiempo_reg_tanh["elapsed"])
+  )
+)
+
+comparacion_regresion
+```
+
+El modelo con menor **RMSE** y **MAE** y mayor **R²** es el que mejor predice
+el precio de las casas. Si el Modelo 1 (logística, capa oculta de 5 neuronas)
+muestra menor error y mejor R², se selecciona ese; si el Modelo 2 logra mejor
+ajuste, se queda con la red más profunda con `tanh`. Tomar en cuenta también
+el **tiempo de procesamiento**: la red `tanh` con dos capas ocultas suele
+demorar más por tener más pesos que entrenar.
+
+```{r}
+# Gráfico comparativo: real vs predicho para los dos modelos
+df_pred <- tibble(
+  real      = rep(y_real_test, 2),
+  predicho  = c(as.numeric(pred_reg_logistica), as.numeric(pred_reg_tanh)),
+  modelo    = rep(c("Logística c(5)", "Tanh c(8,4)"), each = length(y_real_test))
+)
+
+ggplot(df_pred, aes(x = real, y = predicho)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  facet_wrap(~ modelo) +
+  labs(
+    title = "Precio real vs precio predicho",
+    x = "Precio real",
+    y = "Precio predicho"
+  ) +
+  theme_minimal()
+```
+
+
+# 12. Analice si no hay sobreajuste en los modelos. Use para esto la curva de aprendizaje.
+
+Para revisar sobreajuste calculamos el RMSE en entrenamiento y prueba para
+cada modelo. Si el RMSE de entrenamiento es mucho menor que el de prueba,
+hay sobreajuste. Adicionalmente, construimos la **curva de aprendizaje**:
+entrenamos cada modelo con porciones crecientes del set de entrenamiento y
+graficamos el error en train y en test.
+
+```{r}
+# Predicciones en entrenamiento (ambos modelos) - desescalando
+train_x_reg <- train_reg_proc %>% select(all_of(variables_entrada_reg))
+y_real_train <- train_reg_proc$price
+
+pred_train_log_scaled  <- predict(modelo_reg_logistica, newdata = train_x_reg)
+pred_train_log         <- pred_train_log_scaled * (price_max - price_min) + price_min
+
+pred_train_tanh_scaled <- predict(modelo_reg_tanh, newdata = train_x_reg)
+pred_train_tanh        <- pred_train_tanh_scaled * (price_max - price_min) + price_min
+
+rmse_train_log  <- sqrt(mean((y_real_train - pred_train_log)^2,  na.rm = TRUE))
+rmse_train_tanh <- sqrt(mean((y_real_train - pred_train_tanh)^2, na.rm = TRUE))
+
+sobreajuste_reg <- tibble(
+  Modelo            = c("Modelo 1: logística", "Modelo 2: tanh"),
+  RMSE_entrenamiento = c(rmse_train_log, rmse_train_tanh),
+  RMSE_prueba        = c(rmse_log,       rmse_tanh),
+  Diferencia         = RMSE_prueba - RMSE_entrenamiento
+)
+
+sobreajuste_reg
+```
+
+```{r}
+# Curva de aprendizaje: entrenamos con tamaños crecientes y registramos
+# RMSE de train y test. Lo hacemos para ambos modelos.
+
+curva_aprendizaje_nn <- function(hidden_config, activacion,
+                                 nombre_modelo,
+                                 fracciones = c(0.2, 0.4, 0.6, 0.8, 1.0)) {
+
+  resultados <- map_dfr(fracciones, function(frac) {
+
+    set.seed(123)
+    n_sub <- floor(nrow(train_reg_proc) * frac)
+    idx_sub <- sample(seq_len(nrow(train_reg_proc)), size = n_sub)
+    sub_train <- train_reg_proc[idx_sub, ]
+
+    modelo_sub <- tryCatch(
+      neuralnet(
+        formula       = formula_reg,
+        data          = sub_train,
+        hidden        = hidden_config,
+        act.fct       = activacion,
+        linear.output = TRUE,
+        stepmax       = 1e6,
+        lifesign      = "none"
+      ),
+      error = function(e) NULL
+    )
+
+    if (is.null(modelo_sub)) {
+      return(tibble(
+        modelo = nombre_modelo,
+        fraccion = frac,
+        n = n_sub,
+        rmse_train = NA_real_,
+        rmse_test  = NA_real_
+      ))
+    }
+
+    sub_x <- sub_train %>% select(all_of(variables_entrada_reg))
+
+    pred_tr <- predict(modelo_sub, newdata = sub_x) *
+      (price_max - price_min) + price_min
+    pred_te <- predict(modelo_sub, newdata = test_x_reg) *
+      (price_max - price_min) + price_min
+
+    tibble(
+      modelo     = nombre_modelo,
+      fraccion   = frac,
+      n          = n_sub,
+      rmse_train = sqrt(mean((sub_train$price - pred_tr)^2, na.rm = TRUE)),
+      rmse_test  = sqrt(mean((y_real_test - pred_te)^2,    na.rm = TRUE))
+    )
+  })
+
+  resultados
+}
+
+curva_log  <- curva_aprendizaje_nn(c(5),    "logistic", "Logística c(5)")
+curva_tanh <- curva_aprendizaje_nn(c(8, 4), tanh_act,   "Tanh c(8,4)")
+
+curva_total <- bind_rows(curva_log, curva_tanh)
+curva_total
+```
+
+```{r}
+# Gráfico de la curva de aprendizaje
+curva_total %>%
+  pivot_longer(
+    cols = c(rmse_train, rmse_test),
+    names_to = "conjunto",
+    values_to = "rmse"
+  ) %>%
+  mutate(
+    conjunto = recode(conjunto,
+                      rmse_train = "Entrenamiento",
+                      rmse_test  = "Prueba")
+  ) %>%
+  ggplot(aes(x = n, y = rmse, color = conjunto)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ modelo, scales = "free_y") +
+  labs(
+    title = "Curva de aprendizaje - RNA de regresión",
+    x = "Tamaño del conjunto de entrenamiento",
+    y = "RMSE"
+  ) +
+  theme_minimal()
+```
+
+**Interpretación de la curva de aprendizaje:**
+
+Ambos modelos presentan un patrón claro de **sobreajuste severo**. En
+los dos paneles, la curva de entrenamiento (naranja) se mantiene
+prácticamente plana y cercana a cero durante todo el proceso, con RMSE
+que ronda los 100-300, mientras que la curva de prueba (azul) permanece
+en niveles entre 600 y 2,100, con una brecha que no se cierra al
+aumentar el volumen de datos de entrenamiento.
+
+En el panel de la **Logística c(5)**, el RMSE de prueba arranca cerca
+de 1,250, baja levemente al incluir más datos hasta ~800, pero repunta
+de forma abrupta a ~2,100 al llegar al 80% del conjunto de
+entrenamiento y cae a ~500 solo al usar el 100%. Esta volatilidad indica
+que el modelo es inestable y muy sensible a qué observaciones entran en
+el entrenamiento, señal inequívoca de sobreajuste.
+
+En el panel de la **Tanh c(8,4)**, la curva de prueba parte en ~1,650,
+sube a ~2,000 y luego baja a ~650. También es inestable, aunque al
+final converge a un RMSE de prueba ligeramente menor (~650 vs ~500 de
+logística). La brecha entre train y test es igualmente enorme en ambas.
+
+En conclusión, **ninguno de los dos modelos generaliza bien**. La
+diferencia de ~480-485 puntos entre RMSE de entrenamiento y prueba
+(visible en la tabla del punto 12) confirma el sobreajuste en ambos
+casos. La red logística c(5) resulta marginalmente más estable, lo que
+justifica elegirla como base para el tuning del punto 13.
+
+
+# 13. Para el modelo elegido de regresión tunee los parámetros y discuta si puede mejorar todavía el modelo sin llegar a sobre ajustarlo.
+
+Tomamos el mejor de los dos modelos según la tabla de comparación
+(menor RMSE en prueba) y probamos varias topologías y umbrales para ver si
+podemos bajar el error sin abrir más la brecha train/test. Para no usar el
+test en el tuning, partimos `train_reg_proc` en 80% sub-train y 20%
+validación.
+
+```{r}
+set.seed(123)
+
+idx_tuning_reg <- createDataPartition(
+  train_reg_proc$price,
+  p = 0.80,
+  list = FALSE
+)
+
+train_tuning_reg <- train_reg_proc[idx_tuning_reg, ]
+valid_tuning_reg <- train_reg_proc[-idx_tuning_reg, ]
+
+dim(train_tuning_reg)
+dim(valid_tuning_reg)
+```
+
+```{r}
+# Función para evaluar una configuración en train y validación
+evaluar_nn_reg <- function(hidden_config, activacion, threshold_val,
+                           etiqueta_act) {
+
+  tiempo <- system.time({
+    modelo <- tryCatch(
+      neuralnet(
+        formula       = formula_reg,
+        data          = train_tuning_reg,
+        hidden        = hidden_config,
+        act.fct       = activacion,
+        linear.output = TRUE,
+        threshold     = threshold_val,
+        stepmax       = 1e6,
+        lifesign      = "none"
+      ),
+      error = function(e) NULL
+    )
+  })
+
+  if (is.null(modelo)) {
+    return(tibble(
+      hidden     = paste(hidden_config, collapse = "-"),
+      activacion = etiqueta_act,
+      threshold  = threshold_val,
+      rmse_train = NA_real_,
+      rmse_valid = NA_real_,
+      diferencia = NA_real_,
+      tiempo_seg = as.numeric(tiempo["elapsed"])
+    ))
+  }
+
+  tr_x <- train_tuning_reg %>% select(all_of(variables_entrada_reg))
+  vl_x <- valid_tuning_reg %>% select(all_of(variables_entrada_reg))
+
+  pred_tr <- predict(modelo, newdata = tr_x) *
+    (price_max - price_min) + price_min
+  pred_vl <- predict(modelo, newdata = vl_x) *
+    (price_max - price_min) + price_min
+
+  rmse_tr <- sqrt(mean((train_tuning_reg$price - pred_tr)^2, na.rm = TRUE))
+  rmse_vl <- sqrt(mean((valid_tuning_reg$price - pred_vl)^2, na.rm = TRUE))
+
+  tibble(
+    hidden     = paste(hidden_config, collapse = "-"),
+    activacion = etiqueta_act,
+    threshold  = threshold_val,
+    rmse_train = rmse_tr,
+    rmse_valid = rmse_vl,
+    diferencia = rmse_vl - rmse_tr,
+    tiempo_seg = as.numeric(tiempo["elapsed"])
+  )
+}
+```
+
+```{r}
+# Grid de búsqueda: variamos topología y threshold.
+# Mantenemos logistic porque suele ser el más estable; si en el punto 11
+# ganó tanh, basta cambiar 'activacion' por tanh_act y 'etiqueta_act' por "tanh".
+
+grid_reg <- tibble(
+  hidden_config = list(c(3), c(5), c(7), c(4, 2), c(6, 3)),
+  activacion    = list("logistic", "logistic", "logistic", "logistic", "logistic"),
+  threshold_val = c(0.01, 0.01, 0.01, 0.05, 0.05),
+  etiqueta_act  = c("logistic", "logistic", "logistic", "logistic", "logistic")
+)
+
+set.seed(123)
+resultados_tuning_reg <- pmap_dfr(grid_reg, evaluar_nn_reg)
+
+resultados_tuning_reg %>%
+  arrange(rmse_valid, diferencia)
+```
+
+```{r}
+# Selección del mejor modelo tuneado: menor rmse_valid, desempate por diferencia
+mejor_tuneado_reg <- resultados_tuning_reg %>%
+  filter(!is.na(rmse_valid)) %>%
+  arrange(rmse_valid, diferencia, tiempo_seg) %>%
+  slice(1)
+
+mejor_tuneado_reg
+```
+
+```{r}
+# Reentrenamos el modelo tuneado con TODO el conjunto de entrenamiento
+# y lo evaluamos en el conjunto de prueba real
+hidden_final_reg     <- as.numeric(
+  str_split(mejor_tuneado_reg$hidden, "-", simplify = TRUE)
+)
+threshold_final_reg  <- mejor_tuneado_reg$threshold
+
+set.seed(123)
+tiempo_tuneado_reg <- system.time({
+  modelo_reg_tuneado <- neuralnet(
+    formula       = formula_reg,
+    data          = train_reg_proc,
+    hidden        = hidden_final_reg,
+    act.fct       = "logistic",
+    linear.output = TRUE,
+    threshold     = threshold_final_reg,
+    stepmax       = 1e6,
+    lifesign      = "minimal"
+  )
+})
+
+tiempo_tuneado_reg
+```
+
+```{r}
+# Métricas del modelo tuneado en train y test
+pred_tun_train_scaled <- predict(modelo_reg_tuneado, newdata = train_x_reg)
+pred_tun_train        <- pred_tun_train_scaled * (price_max - price_min) + price_min
+
+pred_tun_test_scaled  <- predict(modelo_reg_tuneado, newdata = test_x_reg)
+pred_tun_test         <- pred_tun_test_scaled * (price_max - price_min) + price_min
+
+rmse_train_tun <- sqrt(mean((y_real_train - pred_tun_train)^2, na.rm = TRUE))
+rmse_test_tun  <- sqrt(mean((y_real_test  - pred_tun_test)^2,  na.rm = TRUE))
+mae_test_tun   <- mean(abs(y_real_test - pred_tun_test), na.rm = TRUE)
+r2_test_tun    <- cor(y_real_test, pred_tun_test, use = "complete.obs")^2
+
+cat("Modelo de regresión tuneado:\n",
+    "  hidden =", paste(hidden_final_reg, collapse = "-"), "\n",
+    "  threshold =", threshold_final_reg, "\n",
+    "  RMSE train =", round(rmse_train_tun, 2), "\n",
+    "  RMSE test  =", round(rmse_test_tun, 2), "\n",
+    "  MAE  test  =", round(mae_test_tun, 2), "\n",
+    "  R^2  test  =", round(r2_test_tun, 4), "\n")
+```
+
+```{r}
+# Comparación final: original vs tuneado
+comparacion_tuning_reg <- tibble(
+  Modelo = c(
+    "Mejor RNA original (punto 11)",
+    "RNA tuneada (punto 13)"
+  ),
+  RMSE_entrenamiento = c(
+    min(rmse_train_log, rmse_train_tanh),
+    rmse_train_tun
+  ),
+  RMSE_prueba = c(
+    min(rmse_log, rmse_tanh),
+    rmse_test_tun
+  ),
+  Diferencia = RMSE_prueba - RMSE_entrenamiento
+)
+
+comparacion_tuning_reg
+```
+
+Tras la búsqueda de hiperparámetros, la configuración seleccionada fue
+**hidden = c(6, 3), logistic, threshold = 0.05**, que en validación
+interna obtuvo un RMSE de 690.44 con un RMSE de entrenamiento de 130.84.
+
+Al reentrenar este modelo con todo el conjunto de entrenamiento y
+evaluarlo sobre el conjunto de prueba real, se obtuvieron los siguientes
+resultados:
+
+  - RMSE entrenamiento: 133.75
+  - RMSE prueba:        613.43
+  - MAE  prueba:        351.51
+  - R²   prueba:          0.056
+
+Comparado con el mejor modelo original del punto 11 (RMSE prueba =
+630.54, diferencia train/test = 484.93), el modelo tuneado logra una
+mejora modesta: el RMSE de prueba baja ~17 puntos y la diferencia
+train/test se reduce de 484.93 a 479.68.
+
+Esto significa que el tuning **mejoró ligeramente** el desempeño sobre
+datos nuevos sin incrementar el sobreajuste (la brecha incluso se redujo
+un poco). Sin embargo, la mejora es marginal y el sobreajuste sigue
+siendo importante: el modelo todavía aprende el entrenamiento
+(RMSE ~134) mucho mejor de lo que predice datos nuevos (RMSE ~613).
+
+El R² de apenas 0.056 es la métrica más reveladora: el modelo solo
+explica el 5.6% de la varianza en los precios del conjunto de prueba,
+lo cual es muy bajo. Esto sugiere que el problema no está en los
+hiperparámetros de la red, sino en que los predictores disponibles (tras
+limpiar variables de fuga) tienen baja capacidad explicativa del precio,
+o que el tamaño del dataset (1,000 filas) es insuficiente para entrenar
+una red neuronal con muchas variables dummy. En este contexto, agregar
+más capas o neuronas solo profundizaría el sobreajuste sin mejorar la
+generalización.
+
+En conclusión, el tuning permitió una mejora marginal del modelo, pero
+la red neuronal de regresión en general no logra predecir el precio con
+precisión razonable para este conjunto de datos. Esto hace que modelos
+más simples como la Regresión Lineal o Random Forest sean candidatos
+más fuertes para esta tarea, como se discutirá en la comparación del
+punto 14.
