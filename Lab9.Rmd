@@ -1025,3 +1025,94 @@ formula_reg <- as.formula(
 )
 ```
 
+# 10. Genere dos modelos de regresión con redes neuronales con diferentes topologías y funciones de activación para predecir el precio de las casas.
+
+## Modelo de regresión 1: red poco profunda con activación logística
+
+Topología: una sola capa oculta con 5 neuronas. Función de activación
+`logistic`. `linear.output = TRUE` porque la salida es continua.
+
+```{r}
+set.seed(123)
+
+tiempo_reg_logistica <- system.time({
+  modelo_reg_logistica <- neuralnet(
+    formula       = formula_reg,
+    data          = train_reg_proc,
+    hidden        = c(5),
+    act.fct       = "logistic",
+    linear.output = TRUE,
+    stepmax       = 1e6,
+    lifesign      = "minimal"
+  )
+})
+
+tiempo_reg_logistica
+```
+
+```{r}
+# Predicciones del modelo 1 (en escala [0,1] -> desescalar a precio real)
+test_x_reg <- test_reg_proc %>% select(all_of(variables_entrada_reg))
+
+pred_reg_log_scaled <- predict(modelo_reg_logistica, newdata = test_x_reg)
+pred_reg_logistica  <- pred_reg_log_scaled * (price_max - price_min) + price_min
+
+# Vector de precios reales en test
+y_real_test <- test_reg_proc$price
+
+head(tibble(real = y_real_test, predicho = as.numeric(pred_reg_logistica)))
+```
+
+```{r}
+# Métricas modelo 1
+rmse_log <- sqrt(mean((y_real_test - pred_reg_logistica)^2, na.rm = TRUE))
+mae_log  <- mean(abs(y_real_test - pred_reg_logistica), na.rm = TRUE)
+r2_log   <- cor(y_real_test, pred_reg_logistica, use = "complete.obs")^2
+
+cat("Modelo 1 (logística, c(5)):\n",
+    "  RMSE =", round(rmse_log, 2), "\n",
+    "  MAE  =", round(mae_log, 2), "\n",
+    "  R^2  =", round(r2_log, 4), "\n")
+```
+
+## Modelo de regresión 2: red más profunda con activación tangente hiperbólica
+
+Topología: dos capas ocultas con 8 y 4 neuronas. Función de activación `tanh`.
+
+```{r}
+# Definimos manualmente la función tanh porque neuralnet no la trae con
+# nombre directo en todas las versiones; así nos aseguramos compatibilidad.
+tanh_act <- function(x) tanh(x)
+
+set.seed(123)
+
+tiempo_reg_tanh <- system.time({
+  modelo_reg_tanh <- neuralnet(
+    formula       = formula_reg,
+    data          = train_reg_proc,
+    hidden        = c(8, 4),
+    act.fct       = tanh_act,
+    linear.output = TRUE,
+    stepmax       = 1e6,
+    lifesign      = "minimal"
+  )
+})
+
+tiempo_reg_tanh
+```
+
+```{r}
+# Predicciones del modelo 2
+pred_reg_tanh_scaled <- predict(modelo_reg_tanh, newdata = test_x_reg)
+pred_reg_tanh        <- pred_reg_tanh_scaled * (price_max - price_min) + price_min
+
+# Métricas modelo 2
+rmse_tanh <- sqrt(mean((y_real_test - pred_reg_tanh)^2, na.rm = TRUE))
+mae_tanh  <- mean(abs(y_real_test - pred_reg_tanh), na.rm = TRUE)
+r2_tanh   <- cor(y_real_test, pred_reg_tanh, use = "complete.obs")^2
+
+cat("Modelo 2 (tanh, c(8,4)):\n",
+    "  RMSE =", round(rmse_tanh, 2), "\n",
+    "  MAE  =", round(mae_tanh, 2), "\n",
+    "  R^2  =", round(r2_tanh, 4), "\n")
+```
